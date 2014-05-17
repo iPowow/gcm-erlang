@@ -7,6 +7,8 @@
 %%% Created : 18 Apr 2013 by Paolo D'Incau <paolo.dincau@gmail.com>
 %%%-------------------------------------------------------------------
 -module(gcm).
+% TODO SEBHACK to make lager work at runtime
+-compile([{parse_transform, lager_transform}]).
 
 -behaviour(gen_server).
 
@@ -167,7 +169,8 @@ do_push(RegIds, Message, Key, ErrorFun) ->
     ApiKey = string:concat("key=", Key),
 
     try httpc:request(post, {?BASEURL, [{"Authorization", ApiKey}], "application/json", GCMRequest}, [], []) of
-        {ok, {{_, 200, _}, Headers, GCMResponse}} ->
+        % TODO SEBHACK unused var
+        {ok, {{_, 200, _}, _Headers, GCMResponse}} ->
             Json = jsx:decode(response_to_binary(GCMResponse)),
             handle_push_result(Json, RegIds, ErrorFun);
         {error, Reason} ->
