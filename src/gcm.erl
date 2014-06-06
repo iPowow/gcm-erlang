@@ -166,14 +166,26 @@ code_change(_OldVsn, State, _Extra) ->
 do_push(RegIds, Message, Key, _ErrorFun) ->
     [FirstRegId|_AllOther] = RegIds,
     lager:info("Message=~p; RegIdsCount=~p FirstRegId=~p ~n", [Message, length(RegIds), FirstRegId]),
-    Data = proplists:get_value(<<"data">>, Message),
-    GCMRequest = jiffy:encode({[{<<"registration_ids">>,RegIds }, {<<"data">>, {Data}}]}),
+    NewMessage = ej:set({<<"registration_ids">>}, Message, RegIds),
+%%     lager:info("NewMessage=~p; ~n", [NewMessage]),
+    GCMRequest = jiffy:encode(NewMessage),
+%%     lager:info("json msg=~p;  ~n", [GCMRequest]),
+
     ApiKey = string:concat("key=", Key),
-    START = os:timestamp(),
+
+
+      START = os:timestamp(),
       try httpc:request(post, {?BASEURL, [{"Authorization", ApiKey}], "application/json", GCMRequest}, [], []) of
         {ok, {{_, 200, _}, _Headers, GCMResponse}} ->
+        % TODO SEBHACK unused var
+
+
+
             RECEIVED_RESP = os:timestamp(),
+%%             Json = jsx:decode(response_to_binary(GCMResponse)),
             {_Json} = jiffy:decode(response_to_binary(GCMResponse)),
+%%             lager:info("Json=~p;~n", [Json]),
+%%             HandlePushResponse = handle_push_result(Json, RegIds, ErrorFun),
             PARSED_RESP = os:timestamp(),
             lager:info("response  ~p ms, parsing ~p ms  ~n", [timer:now_diff(RECEIVED_RESP, START)/1000,timer:now_diff(PARSED_RESP,RECEIVED_RESP )/1000]),
             {ok};
