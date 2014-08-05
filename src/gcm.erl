@@ -163,7 +163,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-do_push(RegIds, Message, Key, _ErrorFun) ->
+do_push(RegIds, Message, Key, ErrorFun) ->
     [FirstRegId|_AllOther] = RegIds,
     lager:info("Message=~p; RegIdsCount=~p FirstRegId=~p ~n", [Message, length(RegIds), FirstRegId]),
     NewMessage = ej:set({<<"registration_ids">>}, Message, RegIds),
@@ -174,22 +174,17 @@ do_push(RegIds, Message, Key, _ErrorFun) ->
     ApiKey = string:concat("key=", Key),
 
 
-      START = os:timestamp(),
+      RequestedAt = os:timestamp(),
       try httpc:request(post, {?BASEURL, [{"Authorization", ApiKey}], "application/json", GCMRequest}, [], []) of
         {ok, {{_, 200, _}, _Headers, GCMResponse}} ->
-        % TODO SEBHACK unused var
-
-
-
-            RECEIVED_RESP = os:timestamp(),
+            ReceivedAt = os:timestamp(),
+            ResponseTime = timer:now_diff(ReceivedAt, RequestedAt) / 1000,
 %%             Json = jsx:decode(response_to_binary(GCMResponse)),
-            {_Json} = jiffy:decode(response_to_binary(GCMResponse)),
-%%             lager:info("Json=~p;~n", [Json]),
-%%             HandlePushResponse = handle_push_result(Json, RegIds, ErrorFun),
-            PARSED_RESP = os:timestamp(),
-            lager:info("response  ~p ms, parsing ~p ms  ~n", [timer:now_diff(RECEIVED_RESP, START)/1000,timer:now_diff(PARSED_RESP,RECEIVED_RESP )/1000]),
-            {ok};
-
+            {Json} = jiffy:decode(response_to_binary(GCMResponse)),
+            HandlePushResponse = handle_push_result(Json, RegIds, ErrorFun),
+            ParsingTime = timer:now_diff(os:timestamp(), ReceivedAt) / 1000,
+            lager:info("response  ~p ms, parsing ~p ms ~n", [ResponseTime,ParsingTime/1000]),
+            HandlePushResponse;
         {error, Reason} ->
             %% Some general error during the request.
             lager:error("error in request: ~p~n", [Reason]),
@@ -216,54 +211,65 @@ do_push(RegIds, Message, Key, _ErrorFun) ->
             lager:error("exception ~p in call to URL: ~p~n", [Exception, ?BASEURL]),
             {error, Exception}
     end.
-%%
-%% handle_push_result(Json, RegIds, ErrorFun) ->
-%%     {_Multicast, _Success, Failure, Canonical, Results} = get_response_fields(Json),
-%%     case to_be_parsed(Failure, Canonical) of
-%%         true ->
-%%             parse_results(Results, RegIds, ErrorFun);
-%%         false ->
-%%             ok
-%%     end.
-%%
+
+handle_push_result(Json, RegIds, ErrorFun) ->
+    lager:debug("Push results Json::~p ~n", [Json]),
+    {_Multicast, Success, Failure, Canonical, Results} = get_response_fields(Json),
+    lager:info("Push results summary success:~p failure:~p canonicalIds:~p ~n", [Success, Failure, Canonical]),
+    case to_be_parsed(Failure, Canonical) of
+        true ->
+            parse_results(Results, RegIds, ErrorFun);
+        false ->
+            ok
+    end.
+
 response_to_binary(Json) when is_binary(Json) ->
     Json;
 
 response_to_binary(Json) when is_list(Json) ->
     list_to_binary(Json).
-%%
-%% get_response_fields(Json) ->
-%%     {
+
+get_response_fields(Json) ->
+    {
+        ej:get({"multicast_id"}, Json),
+        ej:get({"success"}, Json),
+        ej:get({"failure"}, Json),
+        ej:get({"canonical_ids"}, Json),
+        ej:get({"results"}, Json)
 %%         proplists:get_value(<<"multicast_id">>, Json),
 %%         proplists:get_value(<<"success">>, Json),
 %%         proplists:get_value(<<"failure">>, Json),
 %%         proplists:get_value(<<"canonical_ids">>, Json),
 %%         proplists:get_value(<<"results">>, Json)
-%%     }.
+    }.
+
+to_be_parsed(0, 0) -> false;
+
+to_be_parsed(_Failure, _Canonical) -> true.
+
+parse_results([Result|Results], [RegId|RegIds], ErrorFun) ->
+    case {
+        ej:get({"error"},Result),
+        ej:get({"message_id"},Result),
+        ej:get({"registration_id"},Result)
 %%
-%% to_be_parsed(0, 0) -> false;
-%%
-%% to_be_parsed(_Failure, _Canonical) -> true.
-%%
-%% parse_results([Result|Results], [RegId|RegIds], ErrorFun) ->
-%%     case {
 %%         proplists:get_value(<<"error">>, Result),
 %%         proplists:get_value(<<"message_id">>, Result),
 %%         proplists:get_value(<<"registration_id">>, Result)
-%%     } of
-%%         {Error, undefined, undefined} when Error =/= undefined ->
-%%             ErrorFun(Error, RegId),
-%%             parse_results(Results, RegIds, ErrorFun);
-%%         {undefined, MessageId, undefined} when MessageId =/= undefined ->
-%%             lager:info("Message sent.~n", []),
-%%             parse_results(Results, RegIds, ErrorFun);
-%%         {undefined, MessageId, NewRegId} when MessageId =/= undefined andalso NewRegId =/= undefined ->
-%%             ErrorFun(<<"NewRegistrationId">>, {RegId, NewRegId}),
-%%             parse_results(Results, RegIds, ErrorFun)
-%%     end;
-%%
-%% parse_results([], [], _ErrorFun) ->
-%%     ok.
+    } of
+        {Error, undefined, undefined} when Error =/= undefined ->
+            ErrorFun(Error, RegId),
+            parse_results(Results, RegIds, ErrorFun);
+        {undefined, MessageId, undefined} when MessageId =/= undefined ->
+            lager:info("Message sent.~n", []),
+            parse_results(Results, RegIds, ErrorFun);
+        {undefined, MessageId, NewRegId} when MessageId =/= undefined andalso NewRegId =/= undefined ->
+            ErrorFun(<<"NewRegistrationId">>, {RegId, NewRegId}),
+            parse_results(Results, RegIds, ErrorFun)
+    end;
+
+parse_results([], [], _ErrorFun) ->
+    ok.
 
 handle_error(<<"NewRegistrationId">>, {RegId, NewRegId}) ->
     lager:info("Message sent. Update id ~p with new id ~p.~n", [RegId, NewRegId]),
